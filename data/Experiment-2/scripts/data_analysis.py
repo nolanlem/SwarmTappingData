@@ -6,157 +6,112 @@ Created on Fri May 26 14:48:08 2023
 @author: nolanlem
 """
 
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-"""
-Created on Wed Feb 17 15:22:46 2021
-
-@author: nolanlem
-"""
-import tarfile
-import urllib
-
-import numpy as np
-import matplotlib.pyplot as plt
-import pandas as pd
-import seaborn as sns
-import os 
-import csv
-from sklearn.datasets import make_blobs
-import librosa 
-from scipy import signal
-from scipy.signal import find_peaks
-from scipy import stats
-import time 
-from itertools import chain 
-import matplotlib
-
-from scipy.interpolate import interp1d
-
-import load_subjects_resps 
-
-os.chdir('/Users/nolanlem/Desktop/data/Experiment-2/scripts/')
-
-# load up the subject respsonses from the other script 
-#subject_resps, sndbeatbins = load_subjects_resps.load_subjects_resps()
+from utils import * # utils for libraries and function defs
+# set the root dir 
+#os.chdir('./data/Experiment-2/scripts/')
 
 
-#%%
+#%% some helper string parsing functions added outside of utils
+def str2nparr(dfslice):
+    result = dfslice.apply(lambda x: 
+                           np.fromstring(
+                               x.replace('\n','')
+                                .replace('[','')
+                                .replace(']','')
+                                .replace('  ',' '), sep=' '))
+    return result
 
-def t2s(a):
-    return librosa.time_to_samples(a)
-def s2t(a):
-    return librosa.samples_to_time(a)
-def per2bpm(per):
-    return np.round(60./(per),1)
-def Hz2bpm(hz):
-    return np.round(60.*hz, 2)
+def str_to_array(s):
+    s = s.replace('[', '').replace(']', '').replace('\n', '').split()
+    return np.array([float(x) for x in s])
 
-def mapZCs2Circle(zcs, bwindows):
-    pooledzcs = []
-    for osc in zcs:
-        binnedzcs = binBeats(osc, bwindows)
-        cmapzcs = []
-        for i in range(1, len(binnedzcs[:19])):        
-            zctobin = binnedzcs[i-1]
-            binmin = bwindows[i-1]
-            binmax = bwindows[i]
-            bininterp = interp1d([binmin, binmax], [-np.pi, np.pi]) #map tap values within window from 0-2pi
-            cmapzcs.append(list(bininterp(zctobin)))
-        flatzcs = list(chain.from_iterable(cmapzcs)) 
-        pooledzcs.extend(flatzcs)
-    return np.array(pooledzcs)
+def tapSelect(tapsarr, bbin, beatcenters, optimize='random'):
+    for i, tap in enumerate(tapsarr):
+        if tap is not np.nan and (tap.size >= 1):
+            tap[tap>beatcenters[-1]] = np.nan
 
-def getTrigs(trigdir):
-    zcs = np.load(trigdir, allow_pickle=True)
-    zcs = [s2t(elem)-10 for elem in zcs]
-    zcs = [elem[elem>0] for elem in zcs]
-    return zcs
+            if optimize=='random':
+                tapsarr[i] = tap[np.random.randint(low=0, high=len(tap))]                
+            else:
+                tapsarr[i] = tap
+            if optimize == 'nearest':
+                nearest_tap = return_nearest_idx(tap, beatcenters[i])
+                tapsarr[i] = nearest_tap
+            if optimize=='none':
+                tapsarr[i] = tap
+        else:
+            tapsarr[i] = np.nan      
+    return tapsarr
 
-def binBeats(taps, beat_bins):
-    taps = np.array(taps)
-    digitized = np.digitize(taps, beat_bins) # in secs, returns which beat bin each tap should go into
-    bins = [taps[digitized == i] for i in range(1, len(beat_bins) +1)]
-    return bins
-
-def binTapsFromBeatWindow(taps):
-    binnedtaps = []
-    avg_taps_per_bin = []
-    for i, tap in enumerate(taps):
-        try:
-            num_taps_in_bin = len(taps[i])
-            avg_taps_per_bin.append(num_taps_in_bin)
-
-            if num_taps_in_bin > 1:   
-                random_tap = np.random.randint(low=0, high=num_taps_in_bin)
-                binnedtaps.append(taps[i][random_tap]) # take random tap in window if multiple in one window
-            if num_taps_in_bin == 0:
-                binnedtaps.append(np.nan)
-            if num_taps_in_bin == 1:
-                binnedtaps.append(taps[i][0])
-        except IndexError:
-            binnedtaps.append(np.nan)
-    
-    avg_taps_per_stim = np.mean(avg_taps_per_bin)
-    return binnedtaps, avg_taps_per_stim
-
-def returnBB(thestim):
+def parseString(st):
+    _ = st.replace('[','').replace(']','')
+    _ = _.split(' ')
+    _ = [x for x in _ if x]
+    _ = [float(x) for x in _]
         
-    stimsplit = thestim.split('_')
-    bname = '_'.join([stimsplit[0], stimsplit[2], stimsplit[3] + '.txt'])
-    bwindir = os.path.join(stimtimbredir, 'stimuli_' + stimsplit[-1], 'phases', 'beat-windows', bname)
-    bwindows = np.loadtxt(bwindir)
-    bwindows = s2t(bwindows)
-    return bwindows
+    return np.array(_)
 
-def mapTaps2Circle(bb, bwindows):
-    cmaptaps = []
-    for i in range(1, len(bwindows)):
-        taptobin = bb[i-1]
-        binmin = bwindows[i-1]
-        binmax = bwindows[i]
-        bininterp = interp1d([binmin, binmax], [-np.pi, np.pi]) #map tap values within window from 0-2pi
-        cmaptaps.append(float(bininterp(taptobin))) 
-    return cmaptaps
 
-def getCircMeanVector(mappedtaps):
-    mappedtaps = np.array(mappedtaps)
-    R = np.abs(np.nanmean(np.exp(1j*mappedtaps)))
-    psi = np.angle(np.nanmean(np.exp(1j*mappedtaps)))
-    return R, psi
-
-def getnPVI(itis):
-    nPVI = []
-    for n in range(1, len(itis)):
-        iti_diff = itis[n] - itis[n-1]
-        iti_diff = np.abs(iti_diff/(itis[n] + itis[n-1])/2)
-        nPVI.append(iti_diff)
-    nPVI = np.array(nPVI)/(len(itis)-1)
-    nPVI = 100*np.nansum(nPVI)
-    return nPVI
-    
-def reformatStim(thestim):
-    thestim = thestim.split('_')
-    newstimname = thestim[0] + '_' + thestim[-2] + '_' + thestim[-1] + '.txt'
-    return newstimname
-
-#%%
-
-#%%
-df = pd.read_csv('./df-bb-taps-3-2.csv')  
-# remove csvs
+#%% load in main tap response datafile in pd df
+df = pd.read_csv('./df-bb-taps-6-2.csv')  
+# remove 2 subjects 
 df = df[df["subject"].str.contains("cc_kura-B1_2020-08-09_00h01.21.424.csv") == False]
-df = df[df["subject"].str.contains("bb_kura-A2_2020-08-08_23h32.56.541.csv") == False]  
+df = df[df["subject"].str.contains("bb_kura-A2_2020-08-08_23h32.56.541.csv") == False] 
+
+#%%##########################################################################################
+####################### HISTORGRAM TAP ASYNCHRONIES ##################
+##########################################################################################
+
+numbeats = 19 # number of beats to inspect
+cps = ['strong', 'medium', 'weak', 'none']
+lenbeatsection = 3  # aggregate every 3rd beat to create section  
+beatsections =  [(i, i+lenbeatsection) for i in range(0, numbeats, lenbeatsection)]
 
 
+df = pd.read_csv(os.path.join('all-stats-4-7-nt-new.csv'))
+df = df[df['subject'] != 'PARTICIPANT_kura-B2_2020-09-16_11h23.41.792.csv'] # remove subject
+df['subject cat'] = df['subject cat'].replace({'loyalist':'regular', 'noneconvert':'hybrid', 'convert':'fast'})
 
-#%%
-### NB: need to run this until you get 0 is all strong, loyalists then are at 1, and
-### converters goto group 2. can verify with plot colors 
-#### K MEANS CLUSTERING 
-from sklearn.cluster import KMeans
+df.reset_index()
 
-print('doing k-means....')
+fig_i, ax_i = plt.subplots(nrows=4, ncols=3, figsize=(20,8), sharex=True, sharey=True)
+
+for k, ts in enumerate(['nt']):
+    mxitipools, sxitipools = {}, {}
+    for i, subcat in enumerate(['regular', 'hybrid', 'fast']):
+        for n, cp in enumerate(cps):
+            mxs, sxs = [], []
+            mxitipools[cp], sxitipools[cp] = [], []
+            for person in sorted(list(set(df[df['subject cat'] == subcat]['subject']))): 
+                mxtmp = df[(df['coupling'] == cp) & (df['subject'] == person)]['subjects norm itis']
+                for arr in mxtmp:
+                    mxitipools[cp].extend(str_to_array(arr)[:numbeats])
+
+            xbins = np.linspace(0, 1.5, 100)            
+ 
+            color_ = sns.color_palette()[n]
+
+            ax_i[n,i].hist(mxitipools[cp], bins=xbins, alpha=0.5, color=color_)        
+            kde_sync_cond = stats.gaussian_kde(mxitipools[cp])  
+            ax_i[n,i].plot(xbins, kde_sync_cond(xbins))
+            ax_i[n,i].set_xlim([0,1.5])
+            ax_i[n,i].set_title(f' {cp}')
+            
+            nITI_mx = np.round(np.mean(mxitipools[cp]),2)
+            nITI_sx = np.round(np.std(mxitipools[cp]),2)
+            print(f'{subcat} {cp} : mx: {nITI_mx} sx: {nITI_sx}')
+
+plt.legend(title='coupling', bbox_to_anchor=(1.05, 1), loc='upper left')
+
+#fig_i.suptitle(f'asynchronies per subject category and coupling condition')
+for ax_ in ax_i[-1,:].flat:
+    ax_.set_xlabel('normalized ITI')
+
+#%%####################################################
+############ K MEANS CLUSTERING ########################
+############################################################
+
+# function to perform K-means cluster on tap trial data 
 def getKMeans(x, y, nclusters=2, xname='x', yname='y'):
     plt.figure(figsize=(8,8))
     
@@ -194,7 +149,6 @@ def getKMeans(x, y, nclusters=2, xname='x', yname='y'):
     for n,k in enumerate(ord_clusters):
         #print(n,k)
         if n == 4: # force group 5 to be cyan from color palette hacky
-            print('here')
             plt.scatter(points[y_km == k,0], points[y_km == k,1], s=10, alpha=0.5, label=str(n+1), color=sns.color_palette()[9])
         else:
             plt.scatter(points[y_km == k,0], points[y_km == k,1], s=10, alpha=0.5, label=str(n+1))
@@ -215,7 +169,7 @@ def getKMeans(x, y, nclusters=2, xname='x', yname='y'):
     plt.gca().get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
 
 
-    #### SAVE FIG?#####
+    #### SAVE FIG#####
     #plt.savefig(os.path.join(rootdir, 'k-means-plots','new', f'K-mean-{nclusters}-clusters.eps'))
     #plt.savefig(os.path.join('./plots', f'K-mean-{nclusters}-clusters.png'),dpi=120)
     
@@ -225,12 +179,10 @@ def getKMeans(x, y, nclusters=2, xname='x', yname='y'):
 
     return points, y_km
 
-#%%
-
-
-
-#%% ###### 
-######## do k=5 k-means clustering  #############
+#%% ############################################################
+######## Perform K-means Clustering  #########################
+##################################################################
+# Group tap ITI data into clusters as a function of the stimulus phase coherence 
 
 timbre = 'n'
 Rmodel = df[df['timbre'] == timbre]['R model'].values
@@ -255,44 +207,44 @@ for k in sorted(dfgroups, key=lambda k: dfgroups[k].shape[0], reverse=True):
     
 # add k means group col to df
 for i in [str(elem) for elem in range(numclusters)]:
-    print(f'working on {i}')
+    print(f'working on cluster {i}')
     for person in sortedkgroups[i]['subject'].values:
         idxs = sortedkgroups[i][sortedkgroups[i]['subject'] == person].index
         for idx in idxs:
             df.loc[idx, 'k group'] = i 
             
 
-# save fig?
-plt.savefig('./plots/k-means-50.png', dpi=150)
+# save fig? uncomment
+#plt.savefig('./plots/k-means-50.png', dpi=150)
 
 #%%
 ###########################################################################
-############################# TIME COURSE nITI ##############################################
+##############TIME COURSE Inter Tap Interval Analysis #####################
 ###########################################################################
+# calculate the mean and SD of the nITIs over 7 tap sections each 3 beats long
 
-# read in df
-df = pd.read_csv('./all-stats-4-7-nt-new.csv');
+# read in curr df
+
+df = pd.read_csv('./all-stats-6-2-nt-new.csv');
 
 df['subject cat'] = df['subject cat'].replace({'loyalist':'regular', 'noneconvert':'hybrid', 'convert':'fast'})
 
 
-df = df[df["subject"].str.contains("cc_kura-B1_2020-08-09_00h01.21.424.csv") == False]
-df = df[df["subject"].str.contains("bb_kura-A2_2020-08-08_23h32.56.541.csv") == False]  
+#%%
 
-
-
-#################################################################
-############# ITI PER BEAT SEGMENT AND SUBJECT CATEGORY #############
+#############################################################################
+############# ITI PER BEAT SEGMENT AND SUBJECT CATEGORY ######################
 ##############################################################################
-cps = ['strong', 'medium', 'weak', 'none']
-numbeats = 19 
+
+cps = ['strong', 'medium', 'weak', 'none'] # coupling conditions
+numbeats = 19 # number of beats to inspect
 lenbeatsection = 3  # aggregate every 3rd beat to create section  
-beatsections =  [(i, i+lenbeatsection) for i in range(0, numbeats, lenbeatsection)]
+beatsections =  [(i, i+lenbeatsection) for i in range(0, numbeats, lenbeatsection)] # beat sections
 
 
-# initialize dict of sx curves 
+# initialize dict of standard devs (sx) curves 
 sxcurves = {}
-for s_ in ['nt', 't']:
+for s_ in ['nt', 't']: # 't' is for timbre data .. not analyzing rn
     sxcurves[s_] = {}
     for subcat in ['regular', 'hybrid', 'fast']:
         sxcurves[s_][subcat] = {}
@@ -300,8 +252,6 @@ for s_ in ['nt', 't']:
             sxcurves[s_][subcat][cp] = 0
     
 for k, ts in enumerate(['nt']):
-    
-        
     fig, ax = plt.subplots(nrows=2, ncols=3, figsize=(20,8), sharex=True, sharey='row')
 
     # csv files for mx and sx over tap section
@@ -355,19 +305,18 @@ for k, ts in enumerate(['nt']):
                 mxs.append(np.array(mxtapsections))
                 sxs.append(np.array(sxtapsections))
             
-            # get between subject SEM error    
+            # get between subject SEM error (MX)
             mxs = np.array(mxs) 
             meanmxs = np.nanmean(mxs, axis=0)
             mxerror = np.nanstd(mxs, axis=0)
-    
+            # get between subject SEM error (SD)
             sxs = np.array(sxs)
             meansxs = np.nanmean(sxs, axis=0)
             sxerror = np.nanstd(meansxs, axis=0)
             
             # save sx curves
             sxcurves[ts][subcat][cp] = meansxs
-            for b, bseg in enumerate(beatsections):
-                
+            for b, bseg in enumerate(beatsections):               
                 writer2.writerow([subcat, cp, b, meanmxs[b]])
                 
             xr = np.arange(0+n/7, len(beatsections)+n/7, 1)
@@ -386,8 +335,6 @@ for k, ts in enumerate(['nt']):
             yticks = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
             ax[0,i].set_yticks(yticks)
             ax[0,i].set_yticklabels(yticks)
-
-            yticks = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0]
             
             ax[1,i].set_yticks(yticks)
             ax[1,i].set_yticklabels(yticks)
@@ -418,8 +365,8 @@ fagg.close()
 f3.close()
 
 # # save normal plots      
-fig.savefig(os.path.join('./plots/', 'time-course-nITI.eps'), dpi=150,bbox_inches='tight')
-fig.savefig(os.path.join('./plots/', 'time-course-nITI.png'), dpi=150,bbox_inches='tight')
+# fig.savefig(os.path.join('./plots/', 'time-course-nITI.eps'), dpi=150,bbox_inches='tight')
+# fig.savefig(os.path.join('./plots/', 'time-course-nITI.png'), dpi=150,bbox_inches='tight')
 
 
 ### save log plots
@@ -427,15 +374,20 @@ fig.savefig(os.path.join('./plots/', 'time-course-nITI.png'), dpi=150,bbox_inche
 #fig.savefig(os.path.join(rootdir,'iti-plots','rev', f'loyal tap categories-beat-seg-log.png'), dpi=120)
 
 #%%
+################################################################################
+#################### PHASE COHERENCE ANALYSIS ##################################
+################################################################################
+# perform phase coherence analysis on the aggregate tap data, calculate the 
+# |R| and psi average angle. Plot via subgroup 
 
-#################### PHASE COHERENCE PLOTS ########################
-#################### PHASE COHERENCE PLOTS ########################
-
-df = pd.read_csv('./df-bb-taps-3-2.csv')  
+df = pd.read_csv('./df-bb-taps-6-2.csv')  
 # remove csvs
-df = df[df["subject"].str.contains("cc_kura-B1_2020-08-09_00h01.21.424.csv") == False]
-df = df[df["subject"].str.contains("bb_kura-A2_2020-08-08_23h32.56.541.csv") == False]  
-#%% load stimuli zero crossings from .npy files 
+#df = df[df["subject"].str.contains("cc_kura-B1_2020-08-09_00h01.21.424.csv") == False]
+#df = df[df["subject"].str.contains("bb_kura-A2_2020-08-08_23h32.56.541.csv") == False]  
+#%% l
+#################################################################################
+################ Koad Stimuli phase parameters from .npy files ################
+#################################################################################
 
 tap_optimizer = 'none' # 'random' - choose random tap, 'nearest' - choose optimal tap 
 numbeats = 19
@@ -450,11 +402,6 @@ wbatch = set(list(df[(df.coupling == 'weak') & (df.timbre == 'n')]['stim']))
 mbatch = set(list(df[(df.coupling == 'medium') & (df.timbre == 'n')]['stim']))
 sbatch = set(list(df[(df.coupling == 'strong') & (df.timbre == 'n')]['stim']))
 
-
-# nbatch = [elem for elem in unique_stimuli if elem.startswith('n')]
-# wbatch = [elem for elem in unique_stimuli if elem.startswith('w')]
-# mbatch = [elem for elem in unique_stimuli if elem.startswith('m')]
-# sbatch = [elem for elem in unique_stimuli if elem.startswith('s')]
 cpbatches = [nbatch, wbatch, mbatch, sbatch]
 
 # create dictionary to hold zero crossings for timbre conds and coupling conds
@@ -470,8 +417,9 @@ for tnt, tstr in zip(['nt'],['no-timbre']):
         for i, stim in enumerate(cpbatch):
             print(f'working on %r/%r'%(i+1, len(cpbatch)))    
             bname = reformatStim(stim)
-            print(bname)    
-            trigsdir = os.path.join(stimtimbredir, 'stimuli_' + bname[-1], 'trigs', bname + '.npy')
+            #print(bname) 
+            bname = os.path.basename(bname)
+            trigsdir = os.path.join(stimtimbredir, 'stimuli_' + bname[-5], 'trigs', bname[:-4] + '.npy')
             bbin = str2nparr(df[df['stim'] == stim]['beat windows']).iloc[0]
             beatcenters = bbin[:-1] + np.diff(bbin)/2
             zcs_ = getTrigs(trigsdir)
@@ -491,59 +439,19 @@ for tnt, tstr in zip(['nt'],['no-timbre']):
                 zcsbin.append(list(circlemap(cbinnedzcs)%(2*np.pi)))
             zcs[tnt][cpstr].extend(zcsbin)
 
-#%% some functions 
-def str2nparr(dfslice):
-    result = dfslice.apply(lambda x: 
-                           np.fromstring(
-                               x.replace('\n','')
-                                .replace('[','')
-                                .replace(']','')
-                                .replace('  ',' '), sep=' '))
-    return result
 
-def str_to_array(s):
-    s = s.replace('[', '').replace(']', '').replace('\n', '').split()
-    return np.array([float(x) for x in s])
-
-def tapSelect(tapsarr, bbin, beatcenters, optimize='random'):
-    for i, tap in enumerate(tapsarr):
-        if tap is not np.nan and (tap.size >= 1):
-            tap[tap>beatcenters[-1]] = np.nan
-
-            if optimize=='random':
-                tapsarr[i] = tap[np.random.randint(low=0, high=len(tap))]                
-            else:
-                tapsarr[i] = tap
-            if optimize == 'nearest':
-                nearest_tap = return_nearest_idx(tap, beatcenters[i])
-                tapsarr[i] = nearest_tap
-            if optimize=='none':
-                tapsarr[i] = tap
-        else:
-            tapsarr[i] = np.nan      
-
-    return tapsarr
-
-def parseString(st):
-
-    _ = st.replace('[','').replace(']','')
-    _ = _.split(' ')
-    _ = [x for x in _ if x]
-    _ = [float(x) for x in _]
-        
-    return np.array(_)
 
 #%%
-
-########### make swarm plots ######################
+##################################################################
+########### Generate Swarm Rose/Polar Plots ######################
 ##################################################################
 
+# subset by subject cateogory (regular, hybrid, fast)
 ntreg = list(set(df[(df['subject cat'] == 'regular') & (df.timbre == 'n')]['subject']))
 nthyb = list(set(df[(df['subject cat'] == 'hybrid') & (df.timbre == 'n')]['subject']))
 ntfast = list(set(df[(df['subject cat'] == 'fast') & (df.timbre == 'n')]['subject']))
 
-
-
+# name of csv file to generate for stats in R, later.... 
 r_psi_tnt_fi = 'R-psi-tnt-k12.csv'
 
 fi = open('./csvs/' + r_psi_tnt_fi,'w')
@@ -600,12 +508,11 @@ for k, tnt in enumerate(['nt']):
             aggtaps = np.concatenate(aggtaps.values).ravel()
             aggtaps += psim # push by psi_stim to center them wrt zcs of stimuli
             
-            #aggtaps_ = np.reshape(aggtaps%(2*np.pi), (1, len(aggtaps)))
             
+            # perform circular stats test for directionality (Rayleigh test)
             p_subj = rayleightest(aggtaps%(2*np.pi))
             p_stim = rayleightest(aggzcs%(2*np.pi))
             
-            #['taponset', 'subcat', 'tnt', 'coupling', 'psi'])
 
             # uncomment if writing all tap onsets to csv file
             # for tp in aggtaps:
@@ -615,49 +522,37 @@ for k, tnt in enumerate(['nt']):
             
             # uncomment if writing tap/onset R,psi to csv file 
             writer.writerow(['onset', scatstr, tnt, cp, rm, psim])
-
             
-            # if p_subj > 0.05:
-            #     print('subject taps NS directionality')
+            # print p value for circ. directionality per stim/tap
             print(f'{tnt} {cp} p_stim/p_subj: {p_stim}/{p_subj}' )
             
-            rs, psis = getCircMeanVector(aggtaps)
-            
+            rs, psis = getCircMeanVector(aggtaps) # get the Phase Coherence Magn.     
             writer.writerow(['tap', scatstr, tnt, cp, rs, psis])
 
-            #psis -= psim 
-            noise = 0.3*np.random.random(size=len(aggtaps))
-            
-            
-            #rose_plot(ax_agg[i,j], aggtaps, zorder=0)
-            
+            noise = 0.3*np.random.random(size=len(aggtaps)) # add a little noise for visual indication
             displace = 0.8
-            color = 'darkblue'
+            color = 'darkblue' # subject tap trial color
             c = cm.Blues(np.linspace(0, 1, len(aggtaps)))
             tnt_str = 'no timbre'
 
             if k == 1:
-                displace = 0.8-0.3
+                displace = 0.8-0.3 # displacement - noise
                 color = 'darkred'
                 c = cm.Reds(np.linspace(0,1,len(aggtaps)))
                 tnt_str = 'timbre'
                 
             ax_agg[i,j].scatter(aggtaps, displace - noise, s=20, alpha=0.05, color=c, marker='.', edgecolors='none', linewidth=0.5)
-            ax_agg[i,j].arrow(0, 0.0, psis, rs, color=color, linewidth=1,  zorder=2, label=f'{tnt}') 
-            # ax_agg[i,j].arrow(0, 0, 0, 1, color='black', linewidth=0.2, 
-            #                   linestyle='--')
+            ax_agg[i,j].arrow(0, 0.0, psis, rs, color=color, linewidth=1,  zorder=2, label=f'{tnt_str}') 
             ax_agg[0,j].set_title(f'{cp}') 
-            
-            #ax_agg[i,j].text(1, 1, f'Rm={np.round(rm,2)} $\psi_m$={np.round(psim,2)}\nRs={np.round(rs,2)} $\psi_s$={np.round(psis,2)}', fontsize=8)
+        
             
         ax_agg[i,0].set_ylabel(f'{scatstr} ') 
-        #ax_agg[i,3].legend()
         i+=1 
     k+=1
 plt.legend(bbox_to_anchor=(0.95, 1), loc='upper left')
 
 plt.tight_layout()
-fig_agg.savefig('./plots/pc-swarm-plots.png', dpi=150)
+#fig_agg.savefig('./plots/pc-swarm-plots.png', dpi=150)
 
 
 fi.close()
