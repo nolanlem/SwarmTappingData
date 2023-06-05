@@ -2,4 +2,4 @@ The main analysis scripts are in data-analysis.py which analysize the tap asynch
 
 The main generative modeling scripts are contained in generate-stim.py which reproduces the stimuli used in this experiment (Kuramoto Model of oscillators with variable coupling, init frequency distribution). Output audio and system parameters of the generative model are saved in './stim-no-timbre-5/'. 
 
-Other scripts are used to generate .csv files for various statistics of the data (mostly used in R scripts (not provided)). 
+Other scripts are used to generate .csv files for various statistics of the data (mostly used in R scripts in './R/). 
